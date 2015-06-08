@@ -5,6 +5,7 @@ from stream import *
 from PIL import Image
 import struct
 import StringIO
+import abc_namespace
 
 class TagFactory(object):
     @classmethod
@@ -35,8 +36,10 @@ class TagFactory(object):
         elif type == 43: return TagFrameLabel()
         elif type == 46: return TagDefineMorphShape()
         elif type == 48: return TagDefineFont2()
+	elif type == 65: return TagScriptLimits()
         elif type == 69: return TagFileAttributes()
         elif type == 70: return TagPlaceObject3()
+#	elif type == 72: return TagDoABC()
         elif type == 73: return TagDefineFontAlignZones()
         elif type == 74: return TagCSMTextSettings()
         elif type == 75: return TagDefineFont3()
@@ -45,8 +48,9 @@ class TagFactory(object):
         elif type == 82: return TagDoABC()
         elif type == 83: return TagDefineShape4()
         elif type == 86: return TagDefineSceneAndFrameLabelData()
+	elif type == 87: return TagBinary()
         elif type == 88: return TagDefineFontName()
-        else: return None
+        else: return TagUnknown(type)
 
 class Tag(object):
     def __init__(self):
@@ -76,6 +80,7 @@ class DefinitionTag(Tag):
 
     def __init__(self):
         super(DefinitionTag, self).__init__()
+	self.noserial = None
         self._characterId = -1
 
     @property
@@ -184,6 +189,11 @@ class TagShowFrame(Tag):
     def type(self):
         return TagShowFrame.TYPE
 
+    @property	
+    def __dict__(self):
+        rv = { 'name': "ShowFrame" }
+        return rv
+
     def __str__(self):
         return "[%02d:%s]" % (self.type, self.name)
 
@@ -277,6 +287,7 @@ class TagPlaceObject(DisplayListTag):
     bitmapCache = 0
 
     def __init__(self):
+	self.noserial = None
         self._surfaceFilterList = []
         super(TagPlaceObject, self).__init__()
 
@@ -458,6 +469,7 @@ class TagDefineFont(DefinitionTag):
     TYPE= 10
     glyphShapeTable = []
     def __init__(self):
+	self.noserial = None
         super(TagDefineFont, self).__init__()
 
     @property
@@ -1441,6 +1453,7 @@ class TagPlaceObject3(TagPlaceObject2):
 class TagDefineFontAlignZones(Tag):
     TYPE = 73
     def __init__(self):
+	self.noserial = None
         super(TagDefineFontAlignZones, self).__init__()
 
     @property
@@ -1523,6 +1536,7 @@ class TagDefineFont3(TagDefineFont2):
 class TagSymbolClass(Tag):
     TYPE = 76
     def __init__(self):
+	self.noserial = None
         self.symbols = []
         super(TagSymbolClass, self).__init__()
 
@@ -1572,6 +1586,86 @@ class TagMetadata(Tag):
     def parse(self, data, length, version=1):
         self.xmlString = data.readString()
 
+class TagUnknown(Tag):
+    TYPE=None
+    def __init__(self,tagtype=None):
+        self.TYPE=tagtype
+        super(TagUnknown, self).__init__()
+
+    @property
+    def name(self):
+        return "Unknown_{}".format(self.TYPE)
+
+    @property
+    def type(self):
+        return TagUnknown.TYPE
+
+    @property
+    def level(self):
+        return 1
+
+    @property
+    def version(self):
+        return 1
+
+    def parse(self, data, length, version=1):
+        pos = data.tell()
+        self.bytes = data.f.read(length - (data.tell() - pos)).encode("base64")
+
+class TagScriptLimits(Tag):
+    TYPE = 65
+    def __init__(self):
+        super(TagScriptLimits, self).__init__()
+
+    @property
+    def name(self):
+        return "ScriptLimits"
+
+    @property
+    def type(self):
+        return TagScriptLimits.TYPE
+
+    @property
+    def level(self):
+        return 1
+
+    @property
+    def version(self):
+        return 9
+
+    def parse( self, data, length, version=1):
+        pos = data.tell()
+        self.MaxRecustionDepth    = data.readUI16()
+        self.ScriptTimeoutSeconds = data.readUI16()
+
+class TagBinary(Tag):
+    TYPE = 87
+    def __init__(self):
+        super(TagBinary, self).__init__()
+
+    @property
+    def name(self):
+        return "Binary"
+
+    @property
+    def type(self):
+        return TagBinary.TYPE
+
+    @property
+    def level(self):
+        return 1
+
+    @property
+    def version(self):
+        return 9
+
+    def parse(self, data, length, version=1):
+        pos = data.tell()
+        self.tag = data.readUI16()
+        self.reserved = data.f.read(4)
+        self.bytes = data.f.read(length - (data.tell() - pos)).encode("base64")
+
+
 class TagDoABC(Tag):
     TYPE = 82
     def __init__(self):
@@ -1598,7 +1692,56 @@ class TagDoABC(Tag):
         flags = data.readUI32()
         self.lazyInitializeFlag = ((flags & 0x01) != 0)
         self.abcName = data.readString()
-        self.bytes = data.f.read(length - (data.tell() - pos))
+
+        pre_parse = data.tell()
+        self.minor_version  = data.readUI16()
+        self.major_version  = data.readUI16()
+
+        signed_ints_count   = data.readEncodedU32() - 1
+        self.signed_ints         = []
+        for x in range( signed_ints_count ):
+            self.signed_ints.append( data.readEncodedU32() )
+
+        unsigned_ints_count = data.readEncodedU32() - 1
+        self.unsigned_ints       = []
+        for x in range( unsigned_ints_count ):
+            self.unsigned_ints.append( data.readEncodedU32() )
+
+        doubles_count = data.readEncodedU32() - 1
+        self.doubles = []
+        for x in range( doubles_count ):
+            self.doubles.append( data.readDouble()[0] )
+
+        strings_count       = data.readEncodedU32() - 1
+        self.strings             = []
+        for x in range( strings_count ):
+            self.strings.append( data.readStringCorrect() )
+
+        namespace_kinds = {
+            chr(0x08): 'CONSTANT_Namespace',
+            chr(0x16): 'CONSTANT_PackageNamespace',
+            chr(0x17): 'CONSTANT_PackageInternalNs',
+            chr(0x18): 'CONSTANT_ProtectedNamespace',
+            chr(0x19): 'CONSTANT_ExplicitNamespace',
+            chr(0x1A): 'CONSTANT_StaticProtectedNs',
+            chr(0x05): 'CONSTANT_PrivateNs' }
+
+        namespaces_count       = data.readEncodedU32() - 1
+        self.namespaces_count  = namespaces_count
+        self.namespaces     = []
+        for x in range( strings_count ):
+            ns_kind = data.f.read(1)
+            if ns_kind in namespace_kinds:
+                    ns_kind = namespace_kinds[ns_kind]
+            else:
+                    ns_kind = str(hex(ord(ns_kind)))
+            offset  = data.readEncodedU32()
+            self.namespaces.append( [ ns_kind, offset ] )
+
+        data.f.seek(pre_parse)
+
+        self.bytes = data.f.read(length - (data.tell() - pos)).encode("base64")
+
 
 class TagDefineShape4(TagDefineShape3):
     TYPE = 83
@@ -1634,6 +1777,7 @@ class TagDefineShape4(TagDefineShape3):
 class TagDefineSceneAndFrameLabelData(Tag):
     TYPE = 86
     def __init__(self):
+	self.noserial = None
         self.scenes = []
         self.frameLabels = []
         super(TagDefineSceneAndFrameLabelData, self).__init__()
