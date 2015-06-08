@@ -5,7 +5,6 @@ from stream import *
 from PIL import Image
 import struct
 import StringIO
-import abc_namespace
 
 class TagFactory(object):
     @classmethod
